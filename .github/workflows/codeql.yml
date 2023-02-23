@@ -69,7 +69,7 @@ jobs:
 
     - shell: bash
       run: |
-        git remote add upstream https://github.com/huangminchn/venice
+        git remote add upstream https://github.com/linkedin/venice
         git fetch upstream
 
     - run: |
