@@ -6,8 +6,11 @@ import com.linkedin.venice.utils.concurrent.VeniceConcurrentHashMap;
 import io.tehuti.metrics.MeasurableStat;
 import io.tehuti.metrics.MetricConfig;
 import io.tehuti.metrics.MetricsRepository;
+import io.tehuti.metrics.NamedMeasurableStat;
 import io.tehuti.metrics.Sensor;
+import io.tehuti.metrics.stats.AsyncGauge;
 import io.tehuti.metrics.stats.Avg;
+import io.tehuti.metrics.stats.Gauge;
 import io.tehuti.metrics.stats.Max;
 import io.tehuti.metrics.stats.Percentiles;
 import io.tehuti.metrics.stats.Rate;
@@ -50,7 +53,12 @@ public class AbstractVeniceStats {
     return registerSensor(getSensorFullName(getName(), sensorName), null, null, stats);
   }
 
-  protected void registerSensorAttributeGauge(String sensorName, String attributeName, Gauge stat) {
+  protected Sensor registerSensor(NamedMeasurableStat... stats) {
+    String sensorName = stats.length > 0 ? stats[0].getStatName() : "NO_NAME";
+    return registerSensor(getSensorFullName(getName(), sensorName), null, null, stats);
+  }
+
+  protected void registerSensorAttributeGauge(String sensorName, String attributeName, AsyncGauge stat) {
     String sensorFullName = getSensorFullName(getName(), sensorName);
     Sensor sensor = sensors.computeIfAbsent(sensorFullName, key -> metricsRepository.sensor(sensorFullName));
     String metricName = sensorFullName + "." + attributeName;
@@ -106,10 +114,17 @@ public class AbstractVeniceStats {
 
   /**
    * N.B.: {@link LongAdderRateGauge} is just an implementation detail, and we do not wish to alter metric names
-   * due to it, so we call it the same as {@link Rate}.
+   * due to it, so we call it the same as {@link Rate}. Same for {@link AsyncGauge}, we don't want to alter any existing
+   * metric names, so we call it the same as {@link Gauge}.
    */
   private String metricNameSuffix(MeasurableStat stat) {
-    return (stat instanceof LongAdderRateGauge ? Rate.class : stat.getClass()).getSimpleName();
+    if (stat instanceof LongAdderRateGauge) {
+      return Rate.class.getSimpleName();
+    } else if (stat.getClass() == AsyncGauge.class) {
+      return Gauge.class.getSimpleName();
+    } else {
+      return stat.getClass().getSimpleName();
+    }
   }
 
   protected void unregisterAllSensors() {
@@ -134,6 +149,11 @@ public class AbstractVeniceStats {
   }
 
   protected Sensor registerSensorIfAbsent(String sensorName, MeasurableStat... stats) {
+    return registerSensorIfAbsent(getName(), sensorName, null, null, stats);
+  }
+
+  protected Sensor registerSensorIfAbsent(NamedMeasurableStat... stats) {
+    String sensorName = stats.length > 0 ? stats[0].getStatName() : "NO_NAME";
     return registerSensorIfAbsent(getName(), sensorName, null, null, stats);
   }
 

@@ -1,6 +1,7 @@
 package com.linkedin.venice.stats;
 
 import io.tehuti.metrics.Measurable;
+import io.tehuti.metrics.stats.AsyncGauge;
 
 
 /**
@@ -10,12 +11,8 @@ import io.tehuti.metrics.Measurable;
  * as the suffix of metric name here: {@link AbstractVeniceStats#registerSensor}.
  */
 @Deprecated
-public class LambdaStat extends Gauge {
-  public LambdaStat(Measurable measurable) {
-    super(measurable);
-  }
-
-  public LambdaStat(SimpleMeasurable measurable) {
-    super(measurable);
+public class LambdaStat extends AsyncGauge {
+  public LambdaStat(Measurable measurable, String metricName) {
+    super(measurable, metricName);
   }
 }

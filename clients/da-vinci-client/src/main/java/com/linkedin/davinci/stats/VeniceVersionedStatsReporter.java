@@ -4,9 +4,9 @@ import static com.linkedin.venice.meta.Store.NON_EXISTING_VERSION;
 
 import com.linkedin.venice.common.VeniceSystemStoreUtils;
 import com.linkedin.venice.stats.AbstractVeniceStats;
-import com.linkedin.venice.stats.Gauge;
 import com.linkedin.venice.stats.StatsSupplier;
 import io.tehuti.metrics.MetricsRepository;
+import io.tehuti.metrics.stats.AsyncGauge;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.DoubleSupplier;
 
@@ -41,9 +41,9 @@ public class VeniceVersionedStatsReporter<STATS, STATS_REPORTER extends Abstract
      * TODO: get ride of {@link IS_VERSION_STATS_SETUP}
      */
     if (IS_VERSION_STATS_SETUP.compareAndSet(false, true)) {
-      registerSensor("current_version", new VersionStat(() -> (double) currentVersion));
+      registerSensor(new VersionStat(() -> (double) currentVersion, "current_version"));
       if (!isSystemStore) {
-        registerSensor("future_version", new VersionStat(() -> (double) futureVersion));
+        registerSensor(new VersionStat(() -> (double) futureVersion, "future_version"));
       }
     }
 
@@ -103,13 +103,13 @@ public class VeniceVersionedStatsReporter<STATS, STATS_REPORTER extends Abstract
   }
 
   /**
-   * {@link VersionStat} works exactly the same as {@link Gauge}. The reason we
+   * {@link VersionStat} works exactly the same as {@link AsyncGauge}. The reason we
    * want to keep it here is for maintaining metric name's backward-compatibility. (We
    * suffix class name to metric name to indicate metric's types.)
    */
-  private static class VersionStat extends Gauge {
-    VersionStat(DoubleSupplier supplier) {
-      super(supplier::getAsDouble);
+  private static class VersionStat extends AsyncGauge {
+    VersionStat(DoubleSupplier supplier, String metricName) {
+      super((c, t) -> supplier.getAsDouble(), metricName);
     }
   }
 
