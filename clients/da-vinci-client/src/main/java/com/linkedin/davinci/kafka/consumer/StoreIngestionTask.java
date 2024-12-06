@@ -14,6 +14,7 @@ import static com.linkedin.venice.LogMessages.KILLED_JOB_MESSAGE;
 import static com.linkedin.venice.kafka.protocol.enums.ControlMessageType.START_OF_SEGMENT;
 import static com.linkedin.venice.utils.Utils.FATAL_DATA_VALIDATION_ERROR;
 import static com.linkedin.venice.utils.Utils.getReplicaId;
+import static java.util.Comparator.comparingInt;
 import static java.util.concurrent.TimeUnit.HOURS;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.MINUTES;
@@ -137,6 +138,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListSet;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.PriorityBlockingQueue;
@@ -345,6 +347,8 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
   protected final boolean batchReportIncPushStatusEnabled;
 
   protected final ExecutorService parallelProcessingThreadPool;
+
+  protected final CountDownLatch gracefulShutdownLatch = new CountDownLatch(1);
 
   public StoreIngestionTask(
       StorageService storageService,
@@ -1385,9 +1389,8 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
         /**
          * Special handling for current version when encountering {@link MemoryLimitExhaustedException}.
          */
-        if (partitionException instanceof MemoryLimitExhaustedException
-            || partitionException.getCause() instanceof MemoryLimitExhaustedException
-                && isCurrentVersion.getAsBoolean()) {
+        if (ExceptionUtils.recursiveClassEquals(partitionException, MemoryLimitExhaustedException.class)
+            && isCurrentVersion.getAsBoolean()) {
           LOGGER.warn(
               "Encountered MemoryLimitExhaustedException, and ingestion task will try to reopen the database and"
                   + " resume the consumption after killing ingestion tasks for non current versions");
@@ -1648,6 +1651,8 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
          */
         CompletableFuture.allOf(shutdownFutures.toArray(new CompletableFuture[0])).get(60, SECONDS);
       }
+      // Release the latch after all the shutdown completes in DVC/Server.
+      getGracefulShutdownLatch().countDown();
     } catch (VeniceIngestionTaskKilledException e) {
       LOGGER.info("{} has been killed.", ingestionTaskName);
       ingestionNotificationDispatcher.reportKilled(partitionConsumptionStateMap.values(), e);
@@ -3967,18 +3972,24 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
    * This method is a blocking call to wait for {@link StoreIngestionTask} for fully shutdown in the given time.
    * @param waitTime Maximum wait time for the shutdown operation.
    */
-  public synchronized void shutdown(int waitTime) {
+  public void shutdownAndWait(int waitTime) {
     long startTimeInMs = System.currentTimeMillis();
     close();
     try {
-      wait(waitTime);
+      if (!getGracefulShutdownLatch().await(waitTime, SECONDS)) {
+        LOGGER.warn(
+            "Unable to shutdown ingestion task of topic: {} gracefully in {}ms",
+            kafkaVersionTopic,
+            SECONDS.toMillis(waitTime));
+      } else {
+        LOGGER.info(
+            "Ingestion task of topic: {} is shutdown in {}ms",
+            kafkaVersionTopic,
+            LatencyUtils.getElapsedTimeFromMsToMs(startTimeInMs));
+      }
     } catch (Exception e) {
       LOGGER.error("Caught exception while waiting for ingestion task of topic: {} shutdown.", kafkaVersionTopic);
     }
-    LOGGER.info(
-        "Ingestion task of topic: {} is shutdown in {}ms",
-        kafkaVersionTopic,
-        LatencyUtils.getElapsedTimeFromMsToMs(startTimeInMs));
   }
 
   /**
@@ -4108,11 +4119,16 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
     LOGGER.info("Replica: {} is ready to serve", partitionConsumptionState.getReplicaId());
   }
 
+  // test only
+  void setValueSchemaId(int id) {
+    this.valueSchemaId = id;
+  }
+
   /**
    * Try to warm-up the schema repo cache before reporting completion as new value schema could cause latency degradation
    * while trying to compile it in the read-path.
    */
-  private void warmupSchemaCache(Store store) {
+  void warmupSchemaCache(Store store) {
     if (!store.isReadComputationEnabled()) {
       return;
     }
@@ -4128,19 +4144,23 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
     }
     int numSchemaToGenerate = serverConfig.getNumSchemaFastClassWarmup();
     long warmUpTimeLimit = serverConfig.getFastClassSchemaWarmupTimeout();
-    int endSchemaId = numSchemaToGenerate >= valueSchemaId ? 1 : valueSchemaId - numSchemaToGenerate;
     Schema writerSchema = schemaRepository.getValueSchema(storeName, valueSchemaId).getSchema();
-    Set<Schema> schemaSet = new HashSet<>();
+    List<SchemaEntry> schemaEntries = new ArrayList<>(schemaRepository.getValueSchemas(storeName));
+    schemaEntries.sort(comparingInt(SchemaEntry::getId).reversed());
+    // Try to warm the schema cache by generating last `getNumSchemaFastClassWarmup` schemas.
+    Set<Integer> schemaGenerated = new HashSet<>();
+    for (SchemaEntry schemaEntry: schemaEntries) {
+      schemaGenerated.add(schemaEntry.getId());
+      if (schemaGenerated.size() > numSchemaToGenerate) {
+        break;
+      }
+      cacheFastAvroGenericDeserializer(writerSchema, schemaEntry.getSchema(), warmUpTimeLimit);
+    }
+    LOGGER.info("Warmed up cache of value schema with ids {} of store {}", schemaGenerated, storeName);
+  }
 
-    for (int i = valueSchemaId; i >= endSchemaId; i--) {
-      schemaSet.add(schemaRepository.getValueSchema(storeName, i).getSchema());
-    }
-    if (store.getLatestSuperSetValueSchemaId() > 0) {
-      schemaSet.add(schemaRepository.getValueSchema(storeName, store.getLatestSuperSetValueSchemaId()).getSchema());
-    }
-    for (Schema schema: schemaSet) {
-      FastSerializerDeserializerFactory.cacheFastAvroGenericDeserializer(writerSchema, schema, warmUpTimeLimit);
-    }
+  void cacheFastAvroGenericDeserializer(Schema writerSchema, Schema readerSchema, long warmUpTimeLimit) {
+    FastSerializerDeserializerFactory.cacheFastAvroGenericDeserializer(writerSchema, readerSchema, warmUpTimeLimit);
   }
 
   public void reportError(String message, int userPartition, Exception e) {
@@ -4353,8 +4373,7 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
         continue;
       }
       Exception partitionIngestionException = ex.getException();
-      if (partitionIngestionException instanceof MemoryLimitExhaustedException
-          || partitionIngestionException.getCause() instanceof MemoryLimitExhaustedException) {
+      if (ExceptionUtils.recursiveClassEquals(partitionIngestionException, MemoryLimitExhaustedException.class)) {
         return true;
       }
     }
@@ -4435,6 +4454,10 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
     }
 
     return true;
+  }
+
+  CountDownLatch getGracefulShutdownLatch() {
+    return gracefulShutdownLatch;
   }
 
   // For unit test purpose.
