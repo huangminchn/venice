@@ -20,6 +20,7 @@ import static com.linkedin.venice.controllerapi.ControllerApiConstants.DATA_REPL
 import static com.linkedin.venice.controllerapi.ControllerApiConstants.DISABLE_DAVINCI_PUSH_STATUS_STORE;
 import static com.linkedin.venice.controllerapi.ControllerApiConstants.DISABLE_META_STORE;
 import static com.linkedin.venice.controllerapi.ControllerApiConstants.ENABLE_READS;
+import static com.linkedin.venice.controllerapi.ControllerApiConstants.ENABLE_STORE_MIGRATION;
 import static com.linkedin.venice.controllerapi.ControllerApiConstants.ENABLE_WRITES;
 import static com.linkedin.venice.controllerapi.ControllerApiConstants.ETLED_PROXY_USER_ACCOUNT;
 import static com.linkedin.venice.controllerapi.ControllerApiConstants.FUTURE_VERSION_ETL_ENABLED;
@@ -1716,6 +1717,14 @@ public class VeniceParentHelixAdmin implements Admin {
     return getVeniceHelixAdmin().getRealTimeTopic(clusterName, storeName);
   }
 
+  /**
+   * @see VeniceHelixAdmin#getRealTimeTopic(String, Store)
+   */
+  @Override
+  public String getRealTimeTopic(String clusterName, Store store) {
+    return getVeniceHelixAdmin().getRealTimeTopic(clusterName, store);
+  }
+
   @Override
   public String getSeparateRealTimeTopic(String clusterName, String storeName) {
     return getVeniceHelixAdmin().getSeparateRealTimeTopic(clusterName, storeName);
@@ -2557,8 +2566,10 @@ public class VeniceParentHelixAdmin implements Admin {
       setStore.numVersionsToPreserve =
           numVersionsToPreserve.map(addToUpdatedConfigList(updatedConfigsList, NUM_VERSIONS_TO_PRESERVE))
               .orElseGet(currStore::getNumVersionsToPreserve);
-      setStore.isMigrating = storeMigration.map(addToUpdatedConfigList(updatedConfigsList, STORE_MIGRATION))
-          .orElseGet(currStore::isMigrating);
+      setStore.isMigrating =
+          storeMigration.map(addToUpdatedConfigList(updatedConfigsList, STORE_MIGRATION, ENABLE_STORE_MIGRATION))
+
+              .orElseGet(currStore::isMigrating);
       setStore.replicationMetadataVersionID = replicationMetadataVersionID
           .map(addToUpdatedConfigList(updatedConfigsList, REPLICATION_METADATA_PROTOCOL_VERSION_ID))
           .orElse(currStore.getRmdVersion());
@@ -3870,6 +3881,11 @@ public class VeniceParentHelixAdmin implements Admin {
     throw new VeniceUnsupportedOperationException("getAggregatedHealthStatus");
   }
 
+  @Override
+  public boolean isRTTopicDeletionPermittedByAllControllers(String clusterName, String storeName) {
+    return false;
+  }
+
   /**
    * @see VeniceHelixAdmin#isLeaderControllerFor(String)
    */
@@ -5077,6 +5093,17 @@ public class VeniceParentHelixAdmin implements Admin {
   private <T> Function<T, T> addToUpdatedConfigList(List<CharSequence> updatedConfigList, String config) {
     return (configValue) -> {
       updatedConfigList.add(config);
+      return configValue;
+    };
+  }
+
+  static private <T> Function<T, T> addToUpdatedConfigList(
+      List<CharSequence> updatedConfigList,
+      String config,
+      String legacyConfigName) {
+    return (configValue) -> {
+      updatedConfigList.add(config);
+      updatedConfigList.add(legacyConfigName);
       return configValue;
     };
   }

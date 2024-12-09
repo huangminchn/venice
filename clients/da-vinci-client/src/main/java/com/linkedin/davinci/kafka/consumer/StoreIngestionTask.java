@@ -14,6 +14,7 @@ import static com.linkedin.venice.LogMessages.KILLED_JOB_MESSAGE;
 import static com.linkedin.venice.kafka.protocol.enums.ControlMessageType.START_OF_SEGMENT;
 import static com.linkedin.venice.utils.Utils.FATAL_DATA_VALIDATION_ERROR;
 import static com.linkedin.venice.utils.Utils.getReplicaId;
+import static java.util.Comparator.comparingInt;
 import static java.util.concurrent.TimeUnit.HOURS;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.MINUTES;
@@ -103,6 +104,7 @@ import com.linkedin.venice.utils.ByteUtils;
 import com.linkedin.venice.utils.ComplementSet;
 import com.linkedin.venice.utils.DiskUsage;
 import com.linkedin.venice.utils.ExceptionUtils;
+import com.linkedin.venice.utils.HelixUtils;
 import com.linkedin.venice.utils.LatencyUtils;
 import com.linkedin.venice.utils.RedundantExceptionFilter;
 import com.linkedin.venice.utils.RetryUtils;
@@ -137,6 +139,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListSet;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.PriorityBlockingQueue;
@@ -153,6 +156,7 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 import org.apache.avro.AvroRuntimeException;
 import org.apache.avro.Schema;
+import org.apache.helix.manager.zk.ZKHelixAdmin;
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -285,6 +289,8 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
 
   protected final boolean isWriteComputationEnabled;
 
+  protected final boolean isSeparatedRealtimeTopicEnabled;
+
   /**
    * Freeze ingestion if ready to serve or local data exists
    */
@@ -326,9 +332,11 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
 
   protected boolean isDataRecovery;
   protected int dataRecoverySourceVersionNumber;
+  protected final boolean readOnlyForBatchOnlyStoreEnabled;
   protected final MetaStoreWriter metaStoreWriter;
   protected final Function<String, String> kafkaClusterUrlResolver;
-  protected final boolean readOnlyForBatchOnlyStoreEnabled;
+  protected final boolean resetErrorReplicaEnabled;
+
   protected final CompressionStrategy compressionStrategy;
   protected final StorageEngineBackedCompressorFactory compressorFactory;
   protected final Lazy<VeniceCompressor> compressor;
@@ -346,6 +354,10 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
 
   protected final ExecutorService parallelProcessingThreadPool;
 
+  protected final CountDownLatch gracefulShutdownLatch = new CountDownLatch(1);
+  protected Lazy<ZKHelixAdmin> zkHelixAdmin;
+  protected final String hostName;
+
   public StoreIngestionTask(
       StorageService storageService,
       StoreIngestionTaskFactory.Builder builder,
@@ -358,7 +370,8 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
       boolean isIsolatedIngestion,
       Optional<ObjectCacheBackend> cacheBackend,
       DaVinciRecordTransformerFunctionalInterface recordTransformerFunction,
-      Queue<VeniceNotifier> notifiers) {
+      Queue<VeniceNotifier> notifiers,
+      Lazy<ZKHelixAdmin> zkHelixAdmin) {
     this.storeConfig = storeConfig;
     this.readCycleDelayMs = storeConfig.getKafkaReadCycleDelayMs();
     this.emptyPollSleepMs = storeConfig.getKafkaEmptyPollSleepMs();
@@ -400,12 +413,13 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
         new KafkaDataIntegrityValidator(this.kafkaVersionTopic, DISABLED, producerStateMaxAgeMs);
     this.ingestionTaskName = String.format(CONSUMER_TASK_ID_FORMAT, kafkaVersionTopic);
     this.topicManagerRepository = builder.getTopicManagerRepository();
+    this.readOnlyForBatchOnlyStoreEnabled = storeConfig.isReadOnlyForBatchOnlyStoreEnabled();
     this.hostLevelIngestionStats = builder.getIngestionStats().getStoreStats(storeName);
     this.versionedDIVStats = builder.getVersionedDIVStats();
     this.versionedIngestionStats = builder.getVersionedStorageIngestionStats();
     this.isRunning = new AtomicBoolean(true);
     this.emitMetrics = new AtomicBoolean(true);
-    this.readOnlyForBatchOnlyStoreEnabled = storeConfig.isReadOnlyForBatchOnlyStoreEnabled();
+    this.resetErrorReplicaEnabled = storeConfig.isResetErrorReplicaEnabled();
 
     this.storeBufferService = builder.getStoreBufferService();
     this.isCurrentVersion = isCurrentVersion;
@@ -427,6 +441,8 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
     this.errorPartitionId = errorPartitionId;
 
     this.isWriteComputationEnabled = store.isWriteComputationEnabled();
+
+    this.isSeparatedRealtimeTopicEnabled = version.isSeparateRealTimeTopicEnabled();
 
     this.partitionStateSerializer = builder.getPartitionStateSerializer();
 
@@ -492,6 +508,7 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
         Collections.unmodifiableMap(partitionConsumptionStateMap),
         serverConfig.isHybridQuotaEnabled(),
         serverConfig.isServerCalculateQuotaUsageBasedOnPartitionsAssignmentEnabled(),
+        isSeparatedRealtimeTopicEnabled,
         ingestionNotificationDispatcher,
         this::pauseConsumption,
         this::resumeConsumption);
@@ -525,6 +542,8 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
     }
     this.batchReportIncPushStatusEnabled = !isDaVinciClient && serverConfig.getBatchReportEOIPEnabled();
     this.parallelProcessingThreadPool = builder.getAAWCWorkLoadProcessingThreadPool();
+    this.hostName = Utils.getHostName() + "_" + storeConfig.getListenerPort();
+    this.zkHelixAdmin = zkHelixAdmin;
   }
 
   /** Package-private on purpose, only intended for tests. Do not use for production use cases. */
@@ -1385,9 +1404,8 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
         /**
          * Special handling for current version when encountering {@link MemoryLimitExhaustedException}.
          */
-        if (partitionException instanceof MemoryLimitExhaustedException
-            || partitionException.getCause() instanceof MemoryLimitExhaustedException
-                && isCurrentVersion.getAsBoolean()) {
+        if (ExceptionUtils.recursiveClassEquals(partitionException, MemoryLimitExhaustedException.class)
+            && isCurrentVersion.getAsBoolean()) {
           LOGGER.warn(
               "Encountered MemoryLimitExhaustedException, and ingestion task will try to reopen the database and"
                   + " resume the consumption after killing ingestion tasks for non current versions");
@@ -1548,7 +1566,7 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
           forceUnSubscribedCount++;
         }
       }
-      if (topicPartitionsToUnsubscribe.size() != 0) {
+      if (!topicPartitionsToUnsubscribe.isEmpty()) {
         consumerBatchUnsubscribe(topicPartitionsToUnsubscribe);
       }
     }
@@ -1648,6 +1666,8 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
          */
         CompletableFuture.allOf(shutdownFutures.toArray(new CompletableFuture[0])).get(60, SECONDS);
       }
+      // Release the latch after all the shutdown completes in DVC/Server.
+      getGracefulShutdownLatch().countDown();
     } catch (VeniceIngestionTaskKilledException e) {
       LOGGER.info("{} has been killed.", ingestionTaskName);
       ingestionNotificationDispatcher.reportKilled(partitionConsumptionStateMap.values(), e);
@@ -2114,9 +2134,11 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
         reportStoreVersionTopicOffsetRewindMetrics(newPartitionConsumptionState);
 
         // Subscribe to local version topic.
-        PubSubTopicPartition pubSubTopicPartition =
-            newPartitionConsumptionState.getSourceTopicPartition(topicPartition.getPubSubTopic());
-        consumerSubscribe(pubSubTopicPartition, offsetRecord.getLocalVersionTopicOffset(), localKafkaServer);
+        consumerSubscribe(
+            topicPartition.getPubSubTopic(),
+            newPartitionConsumptionState,
+            offsetRecord.getLocalVersionTopicOffset(),
+            localKafkaServer);
         LOGGER.info("Subscribed to: {} Offset {}", topicPartition, offsetRecord.getLocalVersionTopicOffset());
         storageUtilizationManager.initPartition(partition);
         break;
@@ -3458,14 +3480,25 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
   }
 
   /**
+   * This method unsubscribes topic-partition from the input.
+   * If it is real-time topic and separate RT topic is enabled, it will also unsubscribe from separate real-time topic.
+   */
+  public void unsubscribeFromTopic(PubSubTopic topic, PartitionConsumptionState partitionConsumptionState) {
+    consumerUnSubscribeForStateTransition(topic, partitionConsumptionState);
+    if (isSeparatedRealtimeTopicEnabled() && topic.isRealTime()) {
+      PubSubTopic separateRealTimeTopic =
+          getPubSubTopicRepository().getTopic(Version.composeSeparateRealTimeTopic(topic.getStoreName()));
+      consumerUnSubscribeForStateTransition(separateRealTimeTopic, partitionConsumptionState);
+    }
+  }
+
+  /**
    * It is important during a state transition to wait in {@link SharedKafkaConsumer#waitAfterUnsubscribe(long, Set, long)}
    * until all inflight messages have been processed by the consumer, otherwise there could be a mismatch in the PCS's
    * leader-follower state vs the intended state when the message was polled. Thus, we use an increased timeout of up to
    * 30 minutes according to the maximum value of the metric consumer_records_producing_to_write_buffer_latency.
    */
-  public void consumerUnSubscribeForStateTransition(
-      PubSubTopic topic,
-      PartitionConsumptionState partitionConsumptionState) {
+  void consumerUnSubscribeForStateTransition(PubSubTopic topic, PartitionConsumptionState partitionConsumptionState) {
     Instant startTime = Instant.now();
     int partitionId = partitionConsumptionState.getPartition();
     PubSubTopicPartition topicPartition = new PubSubTopicPartitionImpl(topic, partitionId);
@@ -3489,9 +3522,26 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
 
   public abstract void consumerUnSubscribeAllTopics(PartitionConsumptionState partitionConsumptionState);
 
-  public void consumerSubscribe(PubSubTopicPartition pubSubTopicPartition, long startOffset, String kafkaURL) {
-    // TODO: pass special format of kafka url as input here when subscribe to the separate incremental push topic
+  /**
+   * This method will try to resolve actual topic-partition from input Kafka URL and subscribe to the resolved
+   * topic-partition.
+   */
+  public void consumerSubscribe(
+      PubSubTopic pubSubTopic,
+      PartitionConsumptionState partitionConsumptionState,
+      long startOffset,
+      String kafkaURL) {
+    PubSubTopicPartition resolvedTopicPartition =
+        resolveTopicPartitionWithKafkaURL(pubSubTopic, partitionConsumptionState, kafkaURL);
+    consumerSubscribe(resolvedTopicPartition, startOffset, kafkaURL);
+  }
+
+  void consumerSubscribe(PubSubTopicPartition pubSubTopicPartition, long startOffset, String kafkaURL) {
     String resolvedKafkaURL = kafkaClusterUrlResolver != null ? kafkaClusterUrlResolver.apply(kafkaURL) : kafkaURL;
+    if (!Objects.equals(resolvedKafkaURL, kafkaURL) && !isSeparatedRealtimeTopicEnabled()
+        && pubSubTopicPartition.getPubSubTopic().isRealTime()) {
+      return;
+    }
     final boolean consumeRemotely = !Objects.equals(resolvedKafkaURL, localKafkaServer);
     // TODO: Move remote KafkaConsumerService creating operations into the aggKafkaConsumerService.
     aggKafkaConsumerService
@@ -3967,18 +4017,24 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
    * This method is a blocking call to wait for {@link StoreIngestionTask} for fully shutdown in the given time.
    * @param waitTime Maximum wait time for the shutdown operation.
    */
-  public synchronized void shutdown(int waitTime) {
+  public void shutdownAndWait(int waitTime) {
     long startTimeInMs = System.currentTimeMillis();
     close();
     try {
-      wait(waitTime);
+      if (!getGracefulShutdownLatch().await(waitTime, SECONDS)) {
+        LOGGER.warn(
+            "Unable to shutdown ingestion task of topic: {} gracefully in {}ms",
+            kafkaVersionTopic,
+            SECONDS.toMillis(waitTime));
+      } else {
+        LOGGER.info(
+            "Ingestion task of topic: {} is shutdown in {}ms",
+            kafkaVersionTopic,
+            LatencyUtils.getElapsedTimeFromMsToMs(startTimeInMs));
+      }
     } catch (Exception e) {
       LOGGER.error("Caught exception while waiting for ingestion task of topic: {} shutdown.", kafkaVersionTopic);
     }
-    LOGGER.info(
-        "Ingestion task of topic: {} is shutdown in {}ms",
-        kafkaVersionTopic,
-        LatencyUtils.getElapsedTimeFromMsToMs(startTimeInMs));
   }
 
   /**
@@ -4108,11 +4164,16 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
     LOGGER.info("Replica: {} is ready to serve", partitionConsumptionState.getReplicaId());
   }
 
+  // test only
+  void setValueSchemaId(int id) {
+    this.valueSchemaId = id;
+  }
+
   /**
    * Try to warm-up the schema repo cache before reporting completion as new value schema could cause latency degradation
    * while trying to compile it in the read-path.
    */
-  private void warmupSchemaCache(Store store) {
+  void warmupSchemaCache(Store store) {
     if (!store.isReadComputationEnabled()) {
       return;
     }
@@ -4128,19 +4189,23 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
     }
     int numSchemaToGenerate = serverConfig.getNumSchemaFastClassWarmup();
     long warmUpTimeLimit = serverConfig.getFastClassSchemaWarmupTimeout();
-    int endSchemaId = numSchemaToGenerate >= valueSchemaId ? 1 : valueSchemaId - numSchemaToGenerate;
     Schema writerSchema = schemaRepository.getValueSchema(storeName, valueSchemaId).getSchema();
-    Set<Schema> schemaSet = new HashSet<>();
+    List<SchemaEntry> schemaEntries = new ArrayList<>(schemaRepository.getValueSchemas(storeName));
+    schemaEntries.sort(comparingInt(SchemaEntry::getId).reversed());
+    // Try to warm the schema cache by generating last `getNumSchemaFastClassWarmup` schemas.
+    Set<Integer> schemaGenerated = new HashSet<>();
+    for (SchemaEntry schemaEntry: schemaEntries) {
+      schemaGenerated.add(schemaEntry.getId());
+      if (schemaGenerated.size() > numSchemaToGenerate) {
+        break;
+      }
+      cacheFastAvroGenericDeserializer(writerSchema, schemaEntry.getSchema(), warmUpTimeLimit);
+    }
+    LOGGER.info("Warmed up cache of value schema with ids {} of store {}", schemaGenerated, storeName);
+  }
 
-    for (int i = valueSchemaId; i >= endSchemaId; i--) {
-      schemaSet.add(schemaRepository.getValueSchema(storeName, i).getSchema());
-    }
-    if (store.getLatestSuperSetValueSchemaId() > 0) {
-      schemaSet.add(schemaRepository.getValueSchema(storeName, store.getLatestSuperSetValueSchemaId()).getSchema());
-    }
-    for (Schema schema: schemaSet) {
-      FastSerializerDeserializerFactory.cacheFastAvroGenericDeserializer(writerSchema, schema, warmUpTimeLimit);
-    }
+  void cacheFastAvroGenericDeserializer(Schema writerSchema, Schema readerSchema, long warmUpTimeLimit) {
+    FastSerializerDeserializerFactory.cacheFastAvroGenericDeserializer(writerSchema, readerSchema, warmUpTimeLimit);
   }
 
   public void reportError(String message, int userPartition, Exception e) {
@@ -4149,6 +4214,15 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
       pcsList.add(partitionConsumptionStateMap.get(userPartition));
     }
     ingestionNotificationDispatcher.reportError(pcsList, message, e);
+    // Set the replica state to ERROR so that the controller can attempt to reset the partition.
+    if (!isDaVinciClient && resetErrorReplicaEnabled) {
+      zkHelixAdmin.get()
+          .setPartitionsToError(
+              serverConfig.getClusterName(),
+              hostName,
+              kafkaVersionTopic,
+              Collections.singletonList(HelixUtils.getPartitionName(kafkaVersionTopic, userPartition)));
+    }
   }
 
   public boolean isActiveActiveReplicationEnabled() {
@@ -4353,8 +4427,7 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
         continue;
       }
       Exception partitionIngestionException = ex.getException();
-      if (partitionIngestionException instanceof MemoryLimitExhaustedException
-          || partitionIngestionException.getCause() instanceof MemoryLimitExhaustedException) {
+      if (ExceptionUtils.recursiveClassEquals(partitionIngestionException, MemoryLimitExhaustedException.class)) {
         return true;
       }
     }
@@ -4435,6 +4508,48 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
     }
 
     return true;
+  }
+
+  public boolean isSeparatedRealtimeTopicEnabled() {
+    return isSeparatedRealtimeTopicEnabled;
+  }
+
+  /**
+   * For RT input topic with separate-RT kafka URL, this method will return topic-partition with separated-RT topic.
+   * For other case, it will return topic-partition with input topic.
+   */
+  PubSubTopicPartition resolveTopicPartitionWithKafkaURL(
+      PubSubTopic topic,
+      PartitionConsumptionState partitionConsumptionState,
+      String kafkaURL) {
+    PubSubTopic resolvedTopic = resolveTopicWithKafkaURL(topic, kafkaURL);
+    PubSubTopicPartition pubSubTopicPartition = partitionConsumptionState.getSourceTopicPartition(resolvedTopic);
+    LOGGER.info("Resolved topic-partition: {} from kafkaURL: {}", pubSubTopicPartition, kafkaURL);
+    return pubSubTopicPartition;
+  }
+
+  /**
+   * This method will return resolve topic from input Kafka URL. If it is a separated topic Kafka URL and input topic
+   * is RT topic, it will return separate RT topic, otherwise it will return input topic.
+   */
+  PubSubTopic resolveTopicWithKafkaURL(PubSubTopic topic, String kafkaURL) {
+    if (topic.isRealTime() && getKafkaClusterUrlResolver() != null
+        && !kafkaURL.equals(getKafkaClusterUrlResolver().apply(kafkaURL))) {
+      return getPubSubTopicRepository().getTopic(Version.composeSeparateRealTimeTopic(topic.getStoreName()));
+    }
+    return topic;
+  }
+
+  PubSubTopicRepository getPubSubTopicRepository() {
+    return pubSubTopicRepository;
+  }
+
+  Function<String, String> getKafkaClusterUrlResolver() {
+    return kafkaClusterUrlResolver;
+  }
+
+  CountDownLatch getGracefulShutdownLatch() {
+    return gracefulShutdownLatch;
   }
 
   // For unit test purpose.
