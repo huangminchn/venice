@@ -61,6 +61,7 @@ import static com.linkedin.venice.ConfigKeys.SERVER_ADAPTIVE_THROTTLER_SIGNAL_ID
 import static com.linkedin.venice.ConfigKeys.SERVER_ADAPTIVE_THROTTLER_SINGLE_GET_LATENCY_THRESHOLD;
 import static com.linkedin.venice.ConfigKeys.SERVER_BATCH_REPORT_END_OF_INCREMENTAL_PUSH_STATUS_ENABLED;
 import static com.linkedin.venice.ConfigKeys.SERVER_BLOCKING_QUEUE_TYPE;
+import static com.linkedin.venice.ConfigKeys.SERVER_CENTRALIZED_IDLE_INGESTION_TASK_CLEANUP_ENABLED;
 import static com.linkedin.venice.ConfigKeys.SERVER_CHANNEL_OPTION_WRITE_BUFFER_WATERMARK_HIGH_BYTES;
 import static com.linkedin.venice.ConfigKeys.SERVER_COMPUTE_FAST_AVRO_ENABLED;
 import static com.linkedin.venice.ConfigKeys.SERVER_COMPUTE_QUEUE_CAPACITY;
@@ -584,6 +585,7 @@ public class VeniceServerConfig extends VeniceClusterConfig {
   private final int aclInMemoryCacheTTLMs;
 
   private final int aaWCIngestionStorageLookupThreadPoolSize;
+  private final boolean centralizedIdleIngestionTaskCleanupEnabled;
 
   public VeniceServerConfig(VeniceProperties serverProperties) throws ConfigurationException {
     this(serverProperties, Collections.emptyMap());
@@ -990,6 +992,8 @@ public class VeniceServerConfig extends VeniceClusterConfig {
     aclInMemoryCacheTTLMs = serverProperties.getInt(ACL_IN_MEMORY_CACHE_TTL_MS, -1); // acl caching is disabled by
     aaWCIngestionStorageLookupThreadPoolSize =
         serverProperties.getInt(SERVER_AA_WC_INGESTION_STORAGE_LOOKUP_THREAD_POOL_SIZE, 4);
+    centralizedIdleIngestionTaskCleanupEnabled =
+        serverProperties.getBoolean(SERVER_CENTRALIZED_IDLE_INGESTION_TASK_CLEANUP_ENABLED, true);
   }
 
   long extractIngestionMemoryLimit(
@@ -1802,5 +1806,9 @@ public class VeniceServerConfig extends VeniceClusterConfig {
 
   public int getAaWCIngestionStorageLookupThreadPoolSize() {
     return aaWCIngestionStorageLookupThreadPoolSize;
+  }
+
+  public boolean isCentralizedIdleIngestionTaskCleanupEnabled() {
+    return centralizedIdleIngestionTaskCleanupEnabled;
   }
 }
