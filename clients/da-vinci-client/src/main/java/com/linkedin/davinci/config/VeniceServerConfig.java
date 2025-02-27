@@ -62,6 +62,7 @@ import static com.linkedin.venice.ConfigKeys.SERVER_ADAPTIVE_THROTTLER_SIGNAL_ID
 import static com.linkedin.venice.ConfigKeys.SERVER_ADAPTIVE_THROTTLER_SINGLE_GET_LATENCY_THRESHOLD;
 import static com.linkedin.venice.ConfigKeys.SERVER_BATCH_REPORT_END_OF_INCREMENTAL_PUSH_STATUS_ENABLED;
 import static com.linkedin.venice.ConfigKeys.SERVER_BLOCKING_QUEUE_TYPE;
+import static com.linkedin.venice.ConfigKeys.SERVER_CENTRALIZED_IDLE_INGESTION_TASK_CLEANUP_ENABLED;
 import static com.linkedin.venice.ConfigKeys.SERVER_CHANNEL_OPTION_WRITE_BUFFER_WATERMARK_HIGH_BYTES;
 import static com.linkedin.venice.ConfigKeys.SERVER_COMPUTE_FAST_AVRO_ENABLED;
 import static com.linkedin.venice.ConfigKeys.SERVER_COMPUTE_QUEUE_CAPACITY;
@@ -599,6 +600,7 @@ public class VeniceServerConfig extends VeniceClusterConfig {
   private final int aclInMemoryCacheTTLMs;
 
   private final int aaWCIngestionStorageLookupThreadPoolSize;
+  private final boolean centralizedIdleIngestionTaskCleanupEnabled;
 
   private final List<Double> defaultConsumerPoolLimitFactorsList =
       Arrays.asList(0.4D, 0.6D, 0.8D, 1.0D, 1.2D, 1.4D, 1.6D);
@@ -1026,6 +1028,8 @@ public class VeniceServerConfig extends VeniceClusterConfig {
     aclInMemoryCacheTTLMs = serverProperties.getInt(ACL_IN_MEMORY_CACHE_TTL_MS, -1); // acl caching is disabled by
     aaWCIngestionStorageLookupThreadPoolSize =
         serverProperties.getInt(SERVER_AA_WC_INGESTION_STORAGE_LOOKUP_THREAD_POOL_SIZE, 4);
+    centralizedIdleIngestionTaskCleanupEnabled =
+        serverProperties.getBoolean(SERVER_CENTRALIZED_IDLE_INGESTION_TASK_CLEANUP_ENABLED, true);
   }
 
   List<Double> extractThrottleLimitFactorsFor(VeniceProperties serverProperties, String configKey) {
@@ -1882,5 +1886,9 @@ public class VeniceServerConfig extends VeniceClusterConfig {
 
   List<Double> getDefaultConsumerPoolLimitFactorsList() {
     return defaultConsumerPoolLimitFactorsList;
+  }
+
+  public boolean isCentralizedIdleIngestionTaskCleanupEnabled() {
+    return centralizedIdleIngestionTaskCleanupEnabled;
   }
 }
