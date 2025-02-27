@@ -2572,4 +2572,14 @@ public class ConfigKeys {
    * ConsumptionTask, and leaders will periodically replicate the RT DIV to followers via VT.
    */
   public static final String GLOBAL_RT_DIV_ENABLED = "global.rt.div.enabled";
+
+  /**
+   * Once enabled, Store ingestion tasks will not try to close themselves when they are idle; instead, a service
+   * is started inside KafkaStoreIngestionService to clean up idle tasks. This is completely eliminate the race
+   * conditions between store ingestion task thread and Helix state transition threads when managing the life cycle
+   * of a store ingestion task.
+   * TODO: Deprecate this config after new clean up service is fully rolled out and stable.
+   */
+  public static final String SERVER_CENTRALIZED_IDLE_INGESTION_TASK_CLEANUP_ENABLED =
+      "server.centralized.idle.ingestion.task.cleanup.enabled";
 }

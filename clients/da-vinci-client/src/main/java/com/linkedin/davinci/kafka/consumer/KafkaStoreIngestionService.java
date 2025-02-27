@@ -201,6 +201,8 @@ public class KafkaStoreIngestionService extends AbstractVeniceService implements
 
   private final ExecutorService aaWCIngestionStorageLookupThreadPool;
 
+  private final ExecutorService idleStoreIngestionTaskKillerExecutor;
+
   public KafkaStoreIngestionService(
       StorageService storageService,
       VeniceConfigLoader veniceConfigLoader,
@@ -450,6 +452,9 @@ public class KafkaStoreIngestionService extends AbstractVeniceService implements
       this.aaWCWorkLoadProcessingThreadPool = null;
     }
 
+    this.idleStoreIngestionTaskKillerExecutor =
+        serverConfig.isCentralizedIdleIngestionTaskCleanupEnabled() ? Executors.newSingleThreadExecutor() : null;
+
     this.aaWCIngestionStorageLookupThreadPool = Executors.newFixedThreadPool(
         serverConfig.getAaWCIngestionStorageLookupThreadPoolSize(),
         new DaemonThreadFactory("AA_WC_INGESTION_STORAGE_LOOKUP"));
@@ -535,6 +540,9 @@ public class KafkaStoreIngestionService extends AbstractVeniceService implements
       participantStoreConsumerExecutorService =
           Executors.newSingleThreadExecutor(new DaemonThreadFactory("ParticipantStoreConsumptionTask"));
       participantStoreConsumerExecutorService.submit(participantStoreConsumptionTask);
+    }
+    if (serverConfig.isCentralizedIdleIngestionTaskCleanupEnabled()) {
+      this.idleStoreIngestionTaskKillerExecutor.submit(this::scanAndCloseIdleConsumptionTasks);
     }
     // Although the StoreConsumptionTasks are now running in their own threads, there is no async
     // process that needs to finish before the KafkaStoreIngestionService can be considered
@@ -625,7 +633,7 @@ public class KafkaStoreIngestionService extends AbstractVeniceService implements
     Utils.closeQuietlyWithErrorLogged(ingestionThrottler);
     Utils.closeQuietlyWithErrorLogged(participantStoreConsumptionTask);
     shutdownExecutorService(participantStoreConsumerExecutorService, "participantStoreConsumerExecutorService", true);
-
+    shutdownExecutorService(idleStoreIngestionTaskKillerExecutor, "idleStoreIngestionTaskKillerExecutor", true);
     /*
      * We would like to gracefully shutdown {@link #ingestionExecutorService},
      * so that it will have an opportunity to checkpoint the processed offset.
@@ -958,11 +966,26 @@ public class KafkaStoreIngestionService extends AbstractVeniceService implements
       LOGGER.info("Reset consumption offset for topic: {}, partition: {}", topicName, partitionId);
     }
     if (!ingestionTaskHasAnySubscription(topicName)) {
-      if (isIsolatedIngestion) {
-        LOGGER.info("Ingestion task for topic {} will be kept open for the access from main process.", topicName);
-      } else {
-        LOGGER.info("Shutting down ingestion task of topic {}", topicName);
-        shutdownStoreIngestionTask(topicName);
+      shutdownIdleIngestionTask(topicName);
+    }
+  }
+
+  /**
+   * A helper function which checks the idles counter inside StoreIngestionTask; if the counter is higher than the idle
+   * threshold, treat the task as idle and shutdown the task.
+   * Help me come up with a function name.
+   */
+  private void shutdownIdleIngestionTask(String topicName) {
+    try (AutoCloseableLock ignore = topicLockManager.getLockForResource(topicName)) {
+      // Must check the idle status again after acquiring the lock.
+      StoreIngestionTask ingestionTask = topicNameToIngestionTaskMap.get(topicName);
+      if (ingestionTask != null && !(ingestionTask.hasAnySubscription() || ingestionTask.hasAnyPendingSubscription())) {
+        if (isIsolatedIngestion) {
+          LOGGER.info("Ingestion task for topic {} will be kept open for the access from main process.", topicName);
+        } else {
+          LOGGER.info("Shutting down ingestion task of topic {}", topicName);
+          shutdownStoreIngestionTask(topicName);
+        }
       }
     }
   }
@@ -1018,6 +1041,26 @@ public class KafkaStoreIngestionService extends AbstractVeniceService implements
     LOGGER.info("Start killing the following ingestion tasks: {}", nonCurrentVersions);
     nonCurrentVersions.forEach(topic -> killConsumptionTask(topic));
     LOGGER.info("Finished killing the following ingestion tasks: {}", nonCurrentVersions);
+  }
+
+  private void scanAndCloseIdleConsumptionTasks() {
+    // Iterate through the map and close the idle tasks.
+    while (isRunning()) {
+      try {
+        for (Map.Entry<String, StoreIngestionTask> entry: topicNameToIngestionTaskMap.entrySet()) {
+          String topicName = entry.getKey();
+          StoreIngestionTask task = entry.getValue();
+          if (task.isIdleOverThreshold()) {
+            LOGGER.info("Found idle task for topic {}, shutting it down.", topicName);
+            shutdownIdleIngestionTask(topicName);
+          }
+        }
+        Thread.sleep(30 * Time.MS_PER_SECOND);
+      } catch (InterruptedException e) {
+        LOGGER.info("Idle store ingestion task killer thread is interrupted", e);
+        currentThread().interrupt();
+      }
+    }
   }
 
   /**
@@ -1322,7 +1365,7 @@ public class KafkaStoreIngestionService extends AbstractVeniceService implements
   private boolean ingestionTaskHasAnySubscription(String topic) {
     try (AutoCloseableLock ignore = topicLockManager.getLockForResource(topic)) {
       StoreIngestionTask consumerTask = topicNameToIngestionTaskMap.get(topic);
-      return consumerTask != null && consumerTask.hasAnySubscription();
+      return consumerTask != null && (consumerTask.hasAnySubscription() || consumerTask.hasAnyPendingSubscription());
     }
   }
 
