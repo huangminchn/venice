@@ -979,7 +979,8 @@ public class KafkaStoreIngestionService extends AbstractVeniceService implements
     try (AutoCloseableLock ignore = topicLockManager.getLockForResource(topicName)) {
       // Must check the idle status again after acquiring the lock.
       StoreIngestionTask ingestionTask = topicNameToIngestionTaskMap.get(topicName);
-      if (ingestionTask != null && !(ingestionTask.hasAnySubscription() || ingestionTask.hasAnyPendingSubscription())) {
+      if (ingestionTask != null
+          && !(ingestionTask.consumerHasAnySubscription() || ingestionTask.hasAnyPendingSubscription())) {
         if (isIsolatedIngestion) {
           LOGGER.info("Ingestion task for topic {} will be kept open for the access from main process.", topicName);
         } else {
@@ -1045,21 +1046,27 @@ public class KafkaStoreIngestionService extends AbstractVeniceService implements
 
   private void scanAndCloseIdleConsumptionTasks() {
     // Iterate through the map and close the idle tasks.
-    while (isRunning()) {
-      try {
-        for (Map.Entry<String, StoreIngestionTask> entry: topicNameToIngestionTaskMap.entrySet()) {
-          String topicName = entry.getKey();
-          StoreIngestionTask task = entry.getValue();
-          if (task.isIdleOverThreshold()) {
-            LOGGER.info("Found idle task for topic {}, shutting it down.", topicName);
-            shutdownIdleIngestionTask(topicName);
+    try {
+      while (true) {
+        try {
+          LOGGER.info("[DEBUGDEBUG] Size of map is {}", topicNameToIngestionTaskMap.size());
+          for (Map.Entry<String, StoreIngestionTask> entry: topicNameToIngestionTaskMap.entrySet()) {
+            String topicName = entry.getKey();
+            StoreIngestionTask task = entry.getValue();
+            LOGGER.info("[DEBUGDEBUG] Checking if task {} is idle", topicName);
+            if (task.isIdleOverThreshold()) {
+              LOGGER.info("[DEBUGDEBUG] Found idle task for topic {}, shutting it down.", topicName);
+              shutdownIdleIngestionTask(topicName);
+            }
           }
+          Thread.sleep(5 * Time.MS_PER_SECOND);
+        } catch (VeniceException e) {
+          LOGGER.info("Error when attempting to shutdown idle store ingestion tasks", e);
         }
-        Thread.sleep(30 * Time.MS_PER_SECOND);
-      } catch (InterruptedException e) {
-        LOGGER.info("Idle store ingestion task killer thread is interrupted", e);
-        currentThread().interrupt();
       }
+    } catch (InterruptedException e) {
+      LOGGER.warn("Interrupted in idle store ingestion task killer thread", e);
+      Thread.currentThread().interrupt();
     }
   }
 
@@ -1365,7 +1372,8 @@ public class KafkaStoreIngestionService extends AbstractVeniceService implements
   private boolean ingestionTaskHasAnySubscription(String topic) {
     try (AutoCloseableLock ignore = topicLockManager.getLockForResource(topic)) {
       StoreIngestionTask consumerTask = topicNameToIngestionTaskMap.get(topic);
-      return consumerTask != null && (consumerTask.hasAnySubscription() || consumerTask.hasAnyPendingSubscription());
+      return consumerTask != null
+          && (consumerTask.consumerHasAnySubscription() || consumerTask.hasAnyPendingSubscription());
     }
   }
 
