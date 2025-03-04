@@ -4204,7 +4204,7 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
   }
 
   private void maybeCloseInactiveIngestionTask() {
-    if (serverConfig.isCentralizedIdleIngestionTaskCleanupEnabled()) {
+    if (serverConfig.isCentralizedIdleIngestionTaskCleanupEnabled() && !isIsolatedIngestion) {
       // Ingestion task will not close by itself
       return;
     }
