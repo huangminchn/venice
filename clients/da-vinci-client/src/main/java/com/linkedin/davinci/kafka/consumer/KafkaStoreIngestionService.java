@@ -110,6 +110,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
@@ -201,7 +202,7 @@ public class KafkaStoreIngestionService extends AbstractVeniceService implements
 
   private final ExecutorService aaWCIngestionStorageLookupThreadPool;
 
-  private final ExecutorService idleStoreIngestionTaskKillerExecutor;
+  private final ScheduledExecutorService idleStoreIngestionTaskKillerExecutor;
 
   public KafkaStoreIngestionService(
       StorageService storageService,
@@ -452,8 +453,9 @@ public class KafkaStoreIngestionService extends AbstractVeniceService implements
       this.aaWCWorkLoadProcessingThreadPool = null;
     }
 
-    this.idleStoreIngestionTaskKillerExecutor =
-        serverConfig.isCentralizedIdleIngestionTaskCleanupEnabled() ? Executors.newSingleThreadExecutor() : null;
+    this.idleStoreIngestionTaskKillerExecutor = serverConfig.isCentralizedIdleIngestionTaskCleanupEnabled()
+        ? Executors.newScheduledThreadPool(1, new DaemonThreadFactory("idle-store-ingestion-task-clean-up-thread"))
+        : null;
 
     this.aaWCIngestionStorageLookupThreadPool = Executors.newFixedThreadPool(
         serverConfig.getAaWCIngestionStorageLookupThreadPoolSize(),
@@ -542,7 +544,8 @@ public class KafkaStoreIngestionService extends AbstractVeniceService implements
       participantStoreConsumerExecutorService.submit(participantStoreConsumptionTask);
     }
     if (serverConfig.isCentralizedIdleIngestionTaskCleanupEnabled()) {
-      this.idleStoreIngestionTaskKillerExecutor.submit(this::scanAndCloseIdleConsumptionTasks);
+      this.idleStoreIngestionTaskKillerExecutor
+          .scheduleWithFixedDelay(this::scanAndCloseIdleConsumptionTasks, 10, 5, TimeUnit.SECONDS);
     }
     // Although the StoreConsumptionTasks are now running in their own threads, there is no async
     // process that needs to finish before the KafkaStoreIngestionService can be considered
@@ -1047,26 +1050,18 @@ public class KafkaStoreIngestionService extends AbstractVeniceService implements
   private void scanAndCloseIdleConsumptionTasks() {
     // Iterate through the map and close the idle tasks.
     try {
-      while (true) {
-        try {
-          LOGGER.info("Number of ingestion tasks before cleaning: {}", topicNameToIngestionTaskMap.size());
-          for (Map.Entry<String, StoreIngestionTask> entry: topicNameToIngestionTaskMap.entrySet()) {
-            String topicName = entry.getKey();
-            StoreIngestionTask task = entry.getValue();
-            if (task.isIdleOverThreshold()) {
-              LOGGER.info("Found idle task for topic {}, shutting it down.", topicName);
-              shutdownIdleIngestionTask(topicName);
-            }
-          }
-          LOGGER.info("Number of active ingestion tasks after cleaning: {}", topicNameToIngestionTaskMap.size());
-          Thread.sleep(5 * Time.MS_PER_SECOND);
-        } catch (VeniceException e) {
-          LOGGER.info("Error when attempting to shutdown idle store ingestion tasks", e);
+      LOGGER.info("Number of ingestion tasks before cleaning: {}", topicNameToIngestionTaskMap.size());
+      for (Map.Entry<String, StoreIngestionTask> entry: topicNameToIngestionTaskMap.entrySet()) {
+        String topicName = entry.getKey();
+        StoreIngestionTask task = entry.getValue();
+        if (task.isIdleOverThreshold()) {
+          LOGGER.info("Found idle task for topic {}, shutting it down.", topicName);
+          shutdownIdleIngestionTask(topicName);
         }
       }
-    } catch (InterruptedException e) {
-      LOGGER.warn("Interrupted in idle store ingestion task killer thread", e);
-      Thread.currentThread().interrupt();
+      LOGGER.info("Number of active ingestion tasks after cleaning: {}", topicNameToIngestionTaskMap.size());
+    } catch (VeniceException e) {
+      LOGGER.info("Error when attempting to shutdown idle store ingestion tasks", e);
     }
   }
 
