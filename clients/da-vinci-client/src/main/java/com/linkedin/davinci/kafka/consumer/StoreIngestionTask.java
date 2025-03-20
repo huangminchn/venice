@@ -769,7 +769,6 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
    * This helper function will check if the ingestion task has been idle for a long time.
    */
   public boolean isIdleOverThreshold() {
-    LOGGER.info("[DEBUGDEBUG] isIdleOverThreshold: {} > {}", getIdleCounter(), getMaxIdleCounter());
     return getIdleCounter() > getMaxIdleCounter();
   }
 
@@ -1576,14 +1575,7 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
      * Check whether current consumer has any subscription or not since 'poll' function will throw
      * {@link IllegalStateException} with empty subscription.
      */
-    if (storeName.equals("test-store_v1")) {
-      LOGGER.info("[DEBUGDEBUG] haha");
-    }
     if (!consumerHasAnySubscription() && !hasAnyPendingSubscription()) {
-      // if (storeName.equals("test-store")) {
-      // LOGGER.info("[DEBUGDEBUG] no subscription for store {} idleCounter = {}, getMaxIdleCounter = {}", storeName,
-      // idleCounter, getMaxIdleCounter());
-      // }
       if (++idleCounter <= getMaxIdleCounter()) {
         String message = ingestionTaskName + " Not subscribed to any partitions ";
         if (!REDUNDANT_LOGGING_FILTER.isRedundantException(message)) {
@@ -1610,10 +1602,6 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
         }
       }
       return;
-    } else {
-      if (storeName.equals("test-store")) {
-        LOGGER.info("[DEBUGDEBUG] there is still subscription for store {}", storeName);
-      }
     }
     idleCounter = 0;
     if (emitMetrics.get()) {

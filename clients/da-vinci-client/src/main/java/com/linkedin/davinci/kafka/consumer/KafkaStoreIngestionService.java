@@ -1049,16 +1049,16 @@ public class KafkaStoreIngestionService extends AbstractVeniceService implements
     try {
       while (true) {
         try {
-          LOGGER.info("[DEBUGDEBUG] Size of map is {}", topicNameToIngestionTaskMap.size());
+          LOGGER.info("Number of ingestion tasks before cleaning: {}", topicNameToIngestionTaskMap.size());
           for (Map.Entry<String, StoreIngestionTask> entry: topicNameToIngestionTaskMap.entrySet()) {
             String topicName = entry.getKey();
             StoreIngestionTask task = entry.getValue();
-            LOGGER.info("[DEBUGDEBUG] Checking if task {} is idle", topicName);
             if (task.isIdleOverThreshold()) {
-              LOGGER.info("[DEBUGDEBUG] Found idle task for topic {}, shutting it down.", topicName);
+              LOGGER.info("Found idle task for topic {}, shutting it down.", topicName);
               shutdownIdleIngestionTask(topicName);
             }
           }
+          LOGGER.info("Number of active ingestion tasks after cleaning: {}", topicNameToIngestionTaskMap.size());
           Thread.sleep(5 * Time.MS_PER_SECOND);
         } catch (VeniceException e) {
           LOGGER.info("Error when attempting to shutdown idle store ingestion tasks", e);
