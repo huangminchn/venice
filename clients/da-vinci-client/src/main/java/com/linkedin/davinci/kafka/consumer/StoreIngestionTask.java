@@ -1580,9 +1580,10 @@ public abstract class StoreIngestionTask implements Runnable, Closeable {
       LOGGER.info("[DEBUGDEBUG] haha");
     }
     if (!consumerHasAnySubscription() && !hasAnyPendingSubscription()) {
-      if (storeName.equals("test-store")) {
-        LOGGER.info("[DEBUGDEBUG] no subscription for store {}", storeName);
-      }
+      // if (storeName.equals("test-store")) {
+      // LOGGER.info("[DEBUGDEBUG] no subscription for store {} idleCounter = {}, getMaxIdleCounter = {}", storeName,
+      // idleCounter, getMaxIdleCounter());
+      // }
       if (++idleCounter <= getMaxIdleCounter()) {
         String message = ingestionTaskName + " Not subscribed to any partitions ";
         if (!REDUNDANT_LOGGING_FILTER.isRedundantException(message)) {

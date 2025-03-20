@@ -2,6 +2,7 @@ package com.linkedin.davinci.kafka.consumer;
 
 import static com.linkedin.venice.ConfigKeys.KAFKA_BOOTSTRAP_SERVERS;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atMostOnce;
@@ -50,6 +51,7 @@ import com.linkedin.venice.pubsub.PubSubConsumerAdapterFactory;
 import com.linkedin.venice.pubsub.PubSubProducerAdapterFactory;
 import com.linkedin.venice.pubsub.PubSubTopicPartitionImpl;
 import com.linkedin.venice.pubsub.PubSubTopicRepository;
+import com.linkedin.venice.pubsub.api.PubSubConsumerAdapter;
 import com.linkedin.venice.pubsub.api.PubSubSecurityProtocol;
 import com.linkedin.venice.pubsub.api.PubSubTopic;
 import com.linkedin.venice.pubsub.api.PubSubTopicPartition;
@@ -78,6 +80,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 import org.apache.avro.Schema;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.mockito.Mockito;
 import org.testng.Assert;
 import org.testng.annotations.BeforeMethod;
@@ -86,6 +90,7 @@ import org.testng.annotations.Test;
 
 @Test
 public abstract class KafkaStoreIngestionServiceTest {
+  private static final Logger LOGGER = LogManager.getLogger(KafkaStoreIngestionServiceTest.class);
   private StorageService mockStorageService;
   private StorageEngineRepository mockStorageEngineRepository;
   private VeniceConfigLoader mockVeniceConfigLoader;
@@ -112,9 +117,12 @@ public abstract class KafkaStoreIngestionServiceTest {
     mockMetadataRepo = mock(ReadOnlyStoreRepository.class);
     mockSchemaRepo = mock(ReadOnlySchemaRepository.class);
     mockLiveClusterConfigRepo = mock(ReadOnlyLiveClusterConfigRepository.class);
+    PubSubConsumerAdapterFactory mockPubSubConsumerAdapterFactory = mock(PubSubConsumerAdapterFactory.class);
+    doReturn(mock(PubSubConsumerAdapter.class)).when(mockPubSubConsumerAdapterFactory)
+        .create(any(), anyBoolean(), any(), any());
     mockPubSubClientsFactory = new PubSubClientsFactory(
         mock(PubSubProducerAdapterFactory.class),
-        mock(PubSubConsumerAdapterFactory.class),
+        mockPubSubConsumerAdapterFactory,
         mock(PubSubAdminAdapterFactory.class));
     compressorFactory = new StorageEngineBackedCompressorFactory(storageMetadataService);
 
@@ -646,8 +654,14 @@ public abstract class KafkaStoreIngestionServiceTest {
     Set<PubSubTopicPartition> topicPartitionsToUnsubscribe = new HashSet<>();
     topicPartitionsToUnsubscribe.add(new PubSubTopicPartitionImpl(pubSubTopicRepository.getTopic(topicName), 0));
     storeIngestionTask.consumerBatchUnsubscribe(topicPartitionsToUnsubscribe);
+    LOGGER.info("[DEBUGDEBUG] yolo");
     // Verify that the store ingestion task is marked as idle and eventually closed
     TestUtils.waitForNonDeterministicAssertion(1, TimeUnit.MINUTES, () -> {
+      LOGGER
+          .info("[DEBUGDEBUG] storeIngestionTask.isIdleOverThreshold() = " + storeIngestionTask.isIdleOverThreshold());
+      LOGGER.info(
+          "[DEBUGDEBUG] kafkaStoreIngestionService.getStoreIngestionTask(topicName) == null? "
+              + (kafkaStoreIngestionService.getStoreIngestionTask(topicName) == null));
       Assert.assertTrue(storeIngestionTask.isIdleOverThreshold());
       Assert.assertNull(kafkaStoreIngestionService.getStoreIngestionTask(topicName));
     });
