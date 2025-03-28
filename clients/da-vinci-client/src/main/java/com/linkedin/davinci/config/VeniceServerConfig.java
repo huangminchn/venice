@@ -622,7 +622,7 @@ public class VeniceServerConfig extends VeniceClusterConfig {
     rocksDBServerConfig = new RocksDBServerConfig(serverProperties);
     enableServerAllowList = serverProperties.getBoolean(ENABLE_SERVER_ALLOW_LIST, false);
     maxLeaderFollowerStateTransitionThreadNumber =
-        serverProperties.getInt(MAX_LEADER_FOLLOWER_STATE_TRANSITION_THREAD_NUMBER, 20);
+        serverProperties.getInt(MAX_LEADER_FOLLOWER_STATE_TRANSITION_THREAD_NUMBER, 3);
 
     blobTransferManagerEnabled = serverProperties.getBoolean(BLOB_TRANSFER_MANAGER_ENABLED, false);
     snapshotRetentionTimeInMin = serverProperties.getInt(BLOB_TRANSFER_SNAPSHOT_RETENTION_TIME_IN_MIN, 60);
