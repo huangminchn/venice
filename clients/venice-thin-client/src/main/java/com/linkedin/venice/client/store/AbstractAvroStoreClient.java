@@ -805,8 +805,23 @@ public abstract class AbstractAvroStoreClient<K, V> extends InternalAvroStoreCli
   public String getRequestPayloadByKeys(Set<K> keys) throws VeniceClientException {
     List<K> keyList = new ArrayList<>(keys);
     byte[] serializedPayload = serializeMultiGetRequest(keyList, Optional.empty());
+    StringBuilder sb = new StringBuilder();
+    for (byte b: serializedPayload) {
+      sb.append((int) b).append(" ");
+    }
+    LOGGER.info(sb.toString());
     String b64payload = EncodingUtils.base64EncodeToString(serializedPayload);
     return b64payload;
+  }
+
+  public String getByteToIntegerString(Set<K> keys) {
+    List<K> keyList = new ArrayList<>(keys);
+    byte[] serializedPayload = serializeMultiGetRequest(keyList, Optional.empty());
+    StringBuilder sb = new StringBuilder();
+    for (byte b: serializedPayload) {
+      sb.append((int) b).append(" ");
+    }
+    return sb.toString();
   }
 
   protected static boolean handleCallbackForEmptyKeySet(Collection<?> keys, StreamingCallback callback) {

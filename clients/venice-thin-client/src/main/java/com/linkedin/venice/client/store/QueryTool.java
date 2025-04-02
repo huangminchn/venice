@@ -98,6 +98,7 @@ public class QueryTool {
             "value-class",
             values.isEmpty() ? "null" : values.values().iterator().next().getClass().getCanonicalName());
         outputMap.put("request-payload", castClient.getRequestPayloadByKeys(keys));
+        outputMap.put("byte-to-integer string", castClient.getByteToIntegerString(keys));
         outputMap.put("keys", keyString);
         outputMap.put("values", values.toString());
         return outputMap;
