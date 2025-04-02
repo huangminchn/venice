@@ -801,6 +801,14 @@ public abstract class AbstractAvroStoreClient<K, V> extends InternalAvroStoreCli
     return result;
   }
 
+  // For testing
+  public String getRequestPayloadByKeys(Set<K> keys) throws VeniceClientException {
+    List<K> keyList = new ArrayList<>(keys);
+    byte[] serializedPayload = serializeMultiGetRequest(keyList, Optional.empty());
+    String b64payload = EncodingUtils.base64EncodeToString(serializedPayload);
+    return b64payload;
+  }
+
   protected static boolean handleCallbackForEmptyKeySet(Collection<?> keys, StreamingCallback callback) {
     if (keys.isEmpty()) {
       // no result for empty key set

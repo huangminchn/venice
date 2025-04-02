@@ -11,19 +11,24 @@ import com.linkedin.venice.utils.SslUtils;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericDatumReader;
 import org.apache.commons.lang.StringUtils;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 
 /**
  * A tool use thin client to query the value from a store by the specified key.
  */
 public class QueryTool {
+  private static final Logger LOGGER = LogManager.getLogger(QueryTool.class);
   private static final int STORE = 0;
   private static final int KEY_STRING = 1;
   private static final int URL = 2;
@@ -80,23 +85,52 @@ public class QueryTool {
               .getInnerStoreClient();
       Schema keySchema = castClient.getKeySchema();
 
-      Object key = null;
       // Transfer vson schema to avro schema.
       while (keySchema.getType().equals(Schema.Type.UNION)) {
         keySchema = VsonAvroSchemaAdapter.stripFromUnion(keySchema);
       }
-      key = convertKey(keyString, keySchema);
-      System.out.println("Key string parsed successfully. About to make the query.");
+      if (keyString.startsWith("[") || keyString.startsWith("'[")) {
+        // This is a list of keys.
+        Set<Object> keys = convertKeys(keyString, keySchema);
+        Map<Object, Object> values = client.batchGet(keys).get(15, TimeUnit.SECONDS);
+        outputMap.put("key-class", keys.iterator().next().getClass().getCanonicalName());
+        outputMap.put(
+            "value-class",
+            values.isEmpty() ? "null" : values.values().iterator().next().getClass().getCanonicalName());
+        outputMap.put("request-payload", castClient.getRequestPayloadByKeys(keys));
+        outputMap.put("keys", keyString);
+        outputMap.put("values", values.toString());
+        return outputMap;
+      } else {
+        Object key = null;
+        key = convertKey(keyString, keySchema);
+        System.out.println("Key string parsed successfully. About to make the query.");
 
-      Object value = client.get(key).get(15, TimeUnit.SECONDS);
+        Object value = client.get(key).get(15, TimeUnit.SECONDS);
 
-      outputMap.put("key-class", key.getClass().getCanonicalName());
-      outputMap.put("value-class", value == null ? "null" : value.getClass().getCanonicalName());
-      outputMap.put("request-path", castClient.getRequestPathByKey(key));
-      outputMap.put("key", keyString);
-      outputMap.put("value", value == null ? "null" : value.toString());
-      return outputMap;
+        outputMap.put("key-class", key.getClass().getCanonicalName());
+        outputMap.put("value-class", value == null ? "null" : value.getClass().getCanonicalName());
+        outputMap.put("request-path", castClient.getRequestPathByKey(key));
+        outputMap.put("key", keyString);
+        outputMap.put("value", value == null ? "null" : value.toString());
+        return outputMap;
+      }
     }
+  }
+
+  public static Set<Object> convertKeys(String keyString, Schema keySchema) {
+    // The key string will be like '[{"uniqueID": 247589500, "dummyStr":"+-~V::~AWY
+    // smA=tL0JD~x2,Yuv&B257G/mp7:m+ED(T;aTb.O\\"},{"uniqueID": 2222, "dummyStr":"+-~V::~AWY
+    // smA=tL0JD~x2,Yuv&B257G/mp7:m+ED(T;aTb.O\\"},{"uniqueID": 247589500, "dummyStr":"+-~V::~AWY
+    // smA=tL0JD~x2,Yuv&B257G/mp7:m+ED(T;aTb.O\\"}]'
+    // Break it down to a list of key strings.
+    LOGGER.info("[DEBUGDEBUG] keyString: {}", keyString);
+    String[] keyStrings = keyString.substring(1, keyString.length() - 1).split(",,,,,");
+    Set<Object> keys = new LinkedHashSet<>();
+    for (String keyStr: keyStrings) {
+      keys.add(convertKey(keyStr, keySchema));
+    }
+    return keys;
   }
 
   public static Object convertKey(String keyString, Schema keySchema) {
