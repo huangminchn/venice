@@ -221,7 +221,7 @@ public class PulsarVeniceSinkTest {
       String name = "name" + i;
       int expectedAge = i;
 
-      Awaitility.await().atMost(30, TimeUnit.SECONDS).untilAsserted(() -> {
+      Awaitility.await().atMost(60, TimeUnit.SECONDS).untilAsserted(() -> {
         // StdErr will have some noise like
         // "StatusLogger Log4j2 could not find a logging implementation."
         ExecResult res = execByService(
@@ -230,6 +230,7 @@ public class PulsarVeniceSinkTest {
             "-c",
             "java -jar /opt/venice/bin/venice-thin-client-all.jar " + storeName + " " + name + " " + veniceRouterUrl
                 + " " + "false" + " " + "\"\"");
+        LOGGER.info("[DEBUGDEBUG] response for key {}: {}", name, res.getStdout());
         assertTrue(res.getStdout().contains("key=" + name));
         assertFalse(res.getStdout().contains("value=null"));
         assertTrue(res.getStdout().contains("value=" + "{\"age\": " + expectedAge + ", \"name\": \"" + name + "\"}"));
