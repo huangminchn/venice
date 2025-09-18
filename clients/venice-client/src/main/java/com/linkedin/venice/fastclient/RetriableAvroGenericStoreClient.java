@@ -51,6 +51,7 @@ public class RetriableAvroGenericStoreClient<K, V> extends DelegatingAvroStoreCl
    */
   private RetryManager singleKeyLongTailRetryManager = null;
   private RetryManager multiKeyLongTailRetryManager = null;
+  private final InternalAvroStoreClient<K, V> delegate;
   private static final Logger LOGGER = LogManager.getLogger(RetriableAvroGenericStoreClient.class);
   // Default value of 0.1 meaning only 10 percent of the user requests are allowed to trigger long tail retry
   private static final double LONG_TAIL_RETRY_BUDGET_PERCENT_DECIMAL = 0.1d;
@@ -62,6 +63,7 @@ public class RetriableAvroGenericStoreClient<K, V> extends DelegatingAvroStoreCl
       ClientConfig clientConfig,
       TimeoutProcessor timeoutProcessor) {
     super(delegate, clientConfig);
+    this.delegate = delegate;
     if (!(clientConfig.isLongTailRetryEnabledForSingleGet() || clientConfig.isLongTailRetryEnabledForBatchGet()
         || clientConfig.isLongTailRetryEnabledForCompute())) {
       throw new VeniceException("Long tail retry is not enabled");
@@ -464,5 +466,12 @@ public class RetriableAvroGenericStoreClient<K, V> extends DelegatingAvroStoreCl
 
   interface StreamingRequestExecutor<K, V, R extends MultiKeyRequestContext<K, V>, RESPONSE> {
     void trigger(R retryRequestContext, Set<K> pendingKeys, StreamingCallback<K, RESPONSE> streamingCallback);
+  }
+
+  /**
+   * Get the inner store client for accessing underlying functionality like payload logging.
+   */
+  public InternalAvroStoreClient<K, V> getInnerStoreClient() {
+    return delegate;
   }
 }

@@ -877,4 +877,41 @@ public class DispatchingAvroGenericStoreClient<K, V> extends InternalAvroStoreCl
   public SchemaReader getSchemaReader() {
     return metadata;
   }
+
+  // For testing - similar to thin client's getRequestPayloadByKeys
+  public String getRequestPayloadByKeys(Set<K> keys) throws VeniceClientException {
+    verifyMetadataInitialized();
+    List<MultiKeyRequestContext.KeyInfo<K>> keyInfoList = new ArrayList<>();
+    int keyIndex = 0;
+    for (K key: keys) {
+      byte[] serializedKey = keySerializer.serialize(key);
+      int partitionId = metadata.getPartitionId(getCurrentVersion(), serializedKey);
+      keyInfoList.add(new MultiKeyRequestContext.KeyInfo<>(key, serializedKey, partitionId));
+      keyIndex++;
+    }
+
+    byte[] serializedPayload = serializeMultiGetRequest(keyInfoList);
+    String b64payload = EncodingUtils.base64EncodeToString(serializedPayload);
+    return b64payload;
+  }
+
+  // For testing - similar to thin client's getByteToIntegerString
+  public String getByteToIntegerString(Set<K> keys) throws VeniceClientException {
+    verifyMetadataInitialized();
+    List<MultiKeyRequestContext.KeyInfo<K>> keyInfoList = new ArrayList<>();
+    int keyIndex = 0;
+    for (K key: keys) {
+      byte[] serializedKey = keySerializer.serialize(key);
+      int partitionId = metadata.getPartitionId(getCurrentVersion(), serializedKey);
+      keyInfoList.add(new MultiKeyRequestContext.KeyInfo<>(key, serializedKey, partitionId));
+      keyIndex++;
+    }
+
+    byte[] serializedPayload = serializeMultiGetRequest(keyInfoList);
+    StringBuilder sb = new StringBuilder();
+    for (byte b: serializedPayload) {
+      sb.append((int) b).append(" ");
+    }
+    return sb.toString();
+  }
 }

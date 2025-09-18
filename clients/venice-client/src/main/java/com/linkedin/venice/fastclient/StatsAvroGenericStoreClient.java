@@ -42,9 +42,11 @@ public class StatsAvroGenericStoreClient<K, V> extends DelegatingAvroStoreClient
   private final ClusterStats clusterStats;
   private final MetricsRepository metricsRepository;
   private final ClusterRouteStats clusterRouteStats;
+  private final InternalAvroStoreClient<K, V> delegate;
 
   public StatsAvroGenericStoreClient(InternalAvroStoreClient<K, V> delegate, ClientConfig clientConfig) {
     super(delegate, clientConfig);
+    this.delegate = delegate;
     this.clientStatsForSingleGet = clientConfig.getStats(RequestType.SINGLE_GET);
     this.clientStatsForStreamingBatchGet = clientConfig.getStats(RequestType.MULTI_GET_STREAMING);
     this.clientStatsForStreamingCompute = clientConfig.getStats(RequestType.COMPUTE_STREAMING);
@@ -333,5 +335,12 @@ public class StatsAvroGenericStoreClient<K, V> extends DelegatingAvroStoreClient
       }
       inner.onCompletion(exception);
     }
+  }
+
+  /**
+   * Get the inner store client for accessing underlying functionality like payload logging.
+   */
+  public InternalAvroStoreClient<K, V> getInnerStoreClient() {
+    return delegate;
   }
 }

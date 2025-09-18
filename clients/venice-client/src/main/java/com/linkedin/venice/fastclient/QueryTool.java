@@ -13,7 +13,6 @@ import com.linkedin.r2.transport.common.Client;
 import com.linkedin.r2.transport.common.TransportClientFactory;
 import com.linkedin.r2.transport.http.client.HttpClientFactory;
 import com.linkedin.r2.transport.http.common.HttpProtocolVersion;
-import com.linkedin.venice.client.store.AvroGenericStoreClient;
 import com.linkedin.venice.exceptions.VeniceException;
 import com.linkedin.venice.exceptions.VeniceUnsupportedOperationException;
 import com.linkedin.venice.fastclient.factory.ClientFactory;
@@ -127,64 +126,67 @@ public class QueryTool {
 
     D2Client d2Client = getAndStartD2Client("zk-ltx1-d2.stg.linkedin.com:12913", true, sslFactory);
     LOGGER.info("[DEBUGDEBUG] d2Client started: {}", d2Client != null);
-    try {
-      Client r2Client = HttpClient5BasedR2Client.getR2Client(sslFactory.getSSLContext(), 8, 5000);
-      LOGGER.info("[DEBUGDEBUG] r2Client started: {}", r2Client != null);
-      ClientConfig.ClientConfigBuilder clientConfigBuilder =
-          new ClientConfig.ClientConfigBuilder<>().setStoreName(store)
-              .setR2Client(r2Client)
-              .setSpeculativeQueryEnabled(true)
-              .setDualReadEnabled(false);
-      clientConfigBuilder.setStoreMetadataFetchMode(SERVER_BASED_METADATA);
-      clientConfigBuilder.setD2Client(d2Client);
-      clientConfigBuilder.setClusterDiscoveryD2Service("venice-discovery");
-      clientConfigBuilder.setMetadataRefreshIntervalInSeconds(5);
-      MetricsRepository metricsRepository = new MetricsRepository();
-      clientConfigBuilder.setMetricsRepository(metricsRepository);
 
-      // AvroGenericStoreClient<Object, Object> genericFastClient =
-      // ClientFactory.getAndStartGenericStoreClient(clientConfigBuilder.build());
+    Client r2Client = HttpClient5BasedR2Client.getR2Client(sslFactory.getSSLContext(), 8, 5000);
+    LOGGER.info("[DEBUGDEBUG] r2Client started: {}", r2Client != null);
+    ClientConfig.ClientConfigBuilder clientConfigBuilder = new ClientConfig.ClientConfigBuilder<>().setStoreName(store)
+        .setR2Client(r2Client)
+        .setSpeculativeQueryEnabled(true)
+        .setDualReadEnabled(false);
+    clientConfigBuilder.setStoreMetadataFetchMode(SERVER_BASED_METADATA);
+    clientConfigBuilder.setD2Client(d2Client);
+    clientConfigBuilder.setClusterDiscoveryD2Service("venice-discovery");
+    clientConfigBuilder.setMetadataRefreshIntervalInSeconds(5);
+    MetricsRepository metricsRepository = new MetricsRepository();
+    clientConfigBuilder.setMetricsRepository(metricsRepository);
 
-      try (AvroGenericStoreClient<Object, Object> client =
-          ClientFactory.getAndStartGenericStoreClient(clientConfigBuilder.build())) {
-        LOGGER.info("[DEBUGDEBUG] fast client started: {}", client != null);
-        Schema keySchema = client.getKeySchema();
+    // AvroGenericStoreClient<Object, Object> genericFastClient =
+    // ClientFactory.getAndStartGenericStoreClient(clientConfigBuilder.build());
 
-        // Transfer vson schema to avro schema.
-        while (keySchema.getType().equals(Schema.Type.UNION)) {
-          keySchema = VsonAvroSchemaAdapter.stripFromUnion(keySchema);
-        }
+    InternalAvroStoreClient<Object, Object> client = (InternalAvroStoreClient<Object, Object>) ClientFactory
+        .getAndStartGenericStoreClient(clientConfigBuilder.build());
+    LOGGER.info("[DEBUGDEBUG] fast client started: {}", client != null);
+    Schema keySchema = client.getKeySchema();
 
-        if (keyString.startsWith("[") || keyString.startsWith("'[")) {
-          // This is a list of keys.
-          Set<Object> keys = convertKeys(keyString, keySchema);
-          LOGGER.info("[DEBUGDEBUG] Start sending requests to server");
-          Map<Object, Object> values = client.batchGet(keys).get(15, TimeUnit.SECONDS);
-          LOGGER.info("[DEBUGDEBUG] Received responses from server");
-          outputMap.put("key-class", keys.iterator().next().getClass().getCanonicalName());
-          outputMap.put(
-              "value-class",
-              values.isEmpty() ? "null" : values.values().iterator().next().getClass().getCanonicalName());
-          outputMap.put("request-type", "server-direct");
-          outputMap.put("keys", keyString);
-          outputMap.put("values", values.toString());
-          return outputMap;
-        } else {
-          Object key = convertKey(keyString, keySchema);
-          System.out.println("Key string parsed successfully. About to make the query.");
+    // Transfer vson schema to avro schema.
+    while (keySchema.getType().equals(Schema.Type.UNION)) {
+      keySchema = VsonAvroSchemaAdapter.stripFromUnion(keySchema);
+    }
 
-          Object value = client.get(key).get(15, TimeUnit.SECONDS);
+    if (keyString.startsWith("[") || keyString.startsWith("'[")) {
+      // This is a list of keys.
+      Set<Object> keys = convertKeys(keyString, keySchema);
+      Map<Object, Object> values = client.batchGet(keys).get(15, TimeUnit.SECONDS);
+      LOGGER.info("[DEBUGDEBUG] Received responses from server");
 
-          outputMap.put("key-class", key.getClass().getCanonicalName());
-          outputMap.put("value-class", value == null ? "null" : value.getClass().getCanonicalName());
-          outputMap.put("request-type", "server-direct");
-          outputMap.put("key", keyString);
-          outputMap.put("value", value == null ? "null" : value.toString());
-          return outputMap;
-        }
-      }
-    } finally {
-      // d2Client.shutdown();
+      // Cast to access payload logging methods
+      DispatchingAvroGenericStoreClient<Object, Object> dispatchingClient = getDispatchingClient(client);
+
+      outputMap.put("key-class", keys.iterator().next().getClass().getCanonicalName());
+      outputMap.put(
+          "value-class",
+          values.isEmpty() ? "null" : values.values().iterator().next().getClass().getCanonicalName());
+      outputMap.put("request-payload", dispatchingClient.getRequestPayloadByKeys(keys));
+      LOGGER.info("[DEBUGDEBUG] request-payload: {}", dispatchingClient.getRequestPayloadByKeys(keys));
+      outputMap.put("byte-to-integer string", dispatchingClient.getByteToIntegerString(keys));
+      LOGGER.info("[DEBUGDEBUG] byte-to-integer string: {}", dispatchingClient.getByteToIntegerString(keys));
+      outputMap.put("request-type", "server-direct");
+      outputMap.put("keys", keyString);
+      outputMap.put("values", values.toString());
+      LOGGER.info("[DEBUGDEBUG] Returning the output map");
+      return outputMap;
+    } else {
+      Object key = convertKey(keyString, keySchema);
+      System.out.println("Key string parsed successfully. About to make the query.");
+
+      Object value = client.get(key).get(15, TimeUnit.SECONDS);
+
+      outputMap.put("key-class", key.getClass().getCanonicalName());
+      outputMap.put("value-class", value == null ? "null" : value.getClass().getCanonicalName());
+      outputMap.put("request-type", "server-direct");
+      outputMap.put("key", keyString);
+      outputMap.put("value", value == null ? "null" : value.toString());
+      return outputMap;
     }
   }
   //
@@ -364,5 +366,36 @@ public class QueryTool {
     D2Client d2Client = getD2Client(zkHosts, https, sslFactory);
     startD2Client(d2Client);
     return d2Client;
+  }
+
+  /**
+   * Helper method to cast through the client wrapper layers to access the underlying DispatchingAvroGenericStoreClient
+   * for payload logging functionality.
+   */
+  private static DispatchingAvroGenericStoreClient<Object, Object> getDispatchingClient(
+      InternalAvroStoreClient<Object, Object> client) {
+    LOGGER.info("[DEBUGDEBUG] start casting");
+    LOGGER.info("[DEBUGDEBUG] client class: {}", client.getClass().getCanonicalName());
+    // The client is wrapped in multiple layers: StatsAvroGenericStoreClient -> RetriableAvroGenericStoreClient ->
+    // DispatchingAvroGenericStoreClient
+    if (client instanceof StatsAvroGenericStoreClient) {
+      StatsAvroGenericStoreClient<Object, Object> statsClient = (StatsAvroGenericStoreClient<Object, Object>) client;
+      InternalAvroStoreClient<Object, Object> innerClient = statsClient.getInnerStoreClient();
+      if (innerClient instanceof RetriableAvroGenericStoreClient) {
+        RetriableAvroGenericStoreClient<Object, Object> retriableClient =
+            (RetriableAvroGenericStoreClient<Object, Object>) innerClient;
+        InternalAvroStoreClient<Object, Object> dispatchingClient = retriableClient.getInnerStoreClient();
+        if (dispatchingClient instanceof DispatchingAvroGenericStoreClient) {
+          return (DispatchingAvroGenericStoreClient<Object, Object>) dispatchingClient;
+        }
+      } else if (innerClient instanceof DispatchingAvroGenericStoreClient) {
+        return (DispatchingAvroGenericStoreClient<Object, Object>) innerClient;
+      }
+    } else if (client instanceof DispatchingAvroGenericStoreClient) {
+      LOGGER.info("[DEBUGDEBUG] casted");
+      return (DispatchingAvroGenericStoreClient<Object, Object>) client;
+    }
+
+    throw new VeniceException("Unable to cast client to DispatchingAvroGenericStoreClient for payload logging");
   }
 }
