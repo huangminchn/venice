@@ -12,6 +12,7 @@
 .reviewboardrc
 .settings
 .shelf/
+**/bin/
 out/
 build/
 internal/venice-test-common/tmp/
