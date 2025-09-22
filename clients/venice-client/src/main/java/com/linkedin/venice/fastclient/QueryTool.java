@@ -166,10 +166,56 @@ public class QueryTool {
       outputMap.put(
           "value-class",
           values.isEmpty() ? "null" : values.values().iterator().next().getClass().getCanonicalName());
-      outputMap.put("request-payload", dispatchingClient.getRequestPayloadByKeys(keys));
-      LOGGER.info("[DEBUGDEBUG] request-payload: {}", dispatchingClient.getRequestPayloadByKeys(keys));
-      outputMap.put("byte-to-integer string", dispatchingClient.getByteToIntegerString(keys));
-      LOGGER.info("[DEBUGDEBUG] byte-to-integer string: {}", dispatchingClient.getByteToIntegerString(keys));
+
+      // Get the serialized payload for detailed logging
+      String requestPayload = dispatchingClient.getRequestPayloadByKeys(keys);
+      outputMap.put("request-payload", requestPayload);
+      LOGGER.info("[DEBUGDEBUG] request-payload: {}", requestPayload);
+
+      String byteToIntegerString = dispatchingClient.getByteToIntegerString(keys);
+      outputMap.put("byte-to-integer string", byteToIntegerString);
+      LOGGER.info("[DEBUGDEBUG] byte-to-integer string: {}", byteToIntegerString);
+
+      // Add detailed hex logging for comparison with K6 script
+      try {
+        // Get the base64-encoded payload and decode it to get raw bytes
+        String b64Payload = requestPayload;
+        byte[] serializedPayload = java.util.Base64.getDecoder().decode(b64Payload);
+
+        // Log payload size
+        LOGGER.info("[DEBUGDEBUG] Serialized payload size: {} bytes", serializedPayload.length);
+
+        // Log complete payload in hex format (matching K6 format)
+        StringBuilder hexBuilder = new StringBuilder();
+        for (int i = 0; i < serializedPayload.length; i++) {
+          if (i > 0)
+            hexBuilder.append(" ");
+          hexBuilder.append(String.format("%02x", serializedPayload[i] & 0xFF));
+        }
+        String payloadHex = hexBuilder.toString();
+        LOGGER.info("[DEBUGDEBUG] Complete serialized payload (hex): {}", payloadHex);
+
+        // Log as ASCII for readability (matching K6 format)
+        StringBuilder asciiBuilder = new StringBuilder();
+        for (byte b: serializedPayload) {
+          int unsignedByte = b & 0xFF;
+          if (unsignedByte >= 32 && unsignedByte <= 126) {
+            asciiBuilder.append((char) unsignedByte);
+          } else {
+            asciiBuilder.append('.');
+          }
+        }
+        String payloadAscii = asciiBuilder.toString();
+        LOGGER.info("[DEBUGDEBUG] Complete serialized payload (ASCII): {}", payloadAscii);
+
+        // Add to output map for reference
+        outputMap.put("serialized-payload-hex", payloadHex);
+        outputMap.put("serialized-payload-ascii", payloadAscii);
+        outputMap.put("serialized-payload-size", String.valueOf(serializedPayload.length));
+
+      } catch (Exception e) {
+        LOGGER.warn("[DEBUGDEBUG] Could not get serialized payload for hex logging: {}", e.getMessage());
+      }
       outputMap.put("request-type", "server-direct");
       outputMap.put("keys", keyString);
       outputMap.put("values", values.toString());
