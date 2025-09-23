@@ -106,11 +106,6 @@ export const options = {
 export default function () {
     const tags = { expected_response: 'true', type: mode }
     if (mode === 'BATCH_GET') {
-        console.log(`[VU ${__VU}] Starting BATCH_GET request`);
-        console.log(`[VU ${__VU}] Target store: ${store}`);
-        console.log(`[VU ${__VU}] Chunk size: ${chunkSize}`);
-        console.log(`[VU ${__VU}] Partition count: ${partitionCount}`);
-
         const httpHeaders = {
             'Content-Type': 'avro/binary',
             'X-VENICE-API-VERSION': 1,
@@ -125,15 +120,10 @@ export default function () {
         const payloadGenTime = Date.now() - start;
         dataPrepTrend.add(payloadGenTime);
 
-        console.log(`[VU ${__VU}] Payload generation took: ${payloadGenTime}ms`);
-        console.log(`[VU ${__VU}] Final payload size: ${payload.length} bytes`);
-
         // Server expects /storage/{resourceName} where resourceName is {store}_v{version}
-        // For now, we'll use a default version. In production, this should be fetched from metadata
         const version = __ENV.storeVersion || '10';
         const resourceName = `${store}_v${version}`;
         const url = `${proto}://${host}:${port}/storage/${resourceName}`;
-        console.log(`[VU ${__VU}] Constructed URL: ${url}`);
 
         httpCall('POST', url, httpHeaders, payload, tags);
     }
@@ -229,62 +219,27 @@ export function handleSummary(data) {
 
 
 function httpCall(method, url, headers, body = null, tags = {}) {
-    const startTime = Date.now();
-
-    // Log request details
-    console.log(`[VU ${__VU}] Making ${method} request to: ${url}`);
-    console.log(`[VU ${__VU}] Headers:`, JSON.stringify(headers, null, 2));
-
-    if (body) {
-        console.log(`[VU ${__VU}] Payload size: ${body.length} bytes`);
-        // Log first few bytes of payload for debugging
-        const previewBytes = body.slice(0, Math.min(50, body.length));
-        const hexPreview = Array.from(previewBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
-        console.log(`[VU ${__VU}] Payload preview (hex): ${hexPreview}`);
-    }
-
     const res = method === 'POST'
         ? http.post(url, body, { headers: headers, httpVersion: '1.1', responseType: 'binary', tags: tags, })
         : http.get(url, { headers: headers, httpVersion: '1.1', tags: tags, });
 
-    const duration = Date.now() - startTime;
-
-    // Log response details
+    // Log errors and important response details
     if (res) {
-        console.log(`[VU ${__VU}] Response status: ${res.status}`);
-        console.log(`[VU ${__VU}] Response time: ${duration}ms`);
-        console.log(`[VU ${__VU}] Response headers:`, JSON.stringify(res.headers, null, 2));
-
-        // Try to get the resolved IP address from response
-        if (res.remote_ip) {
-            console.log(`[VU ${__VU}] Resolved IP: ${res.remote_ip}`);
-        }
-        if (res.remote_port) {
-            console.log(`[VU ${__VU}] Remote port: ${res.remote_port}`);
-        }
-
-        // Log response body size and content
-        if (res.body) {
-            console.log(`[VU ${__VU}] Response body size: ${res.body.length} bytes`);
-            // For text responses (like error messages), try to decode and log the content
-            if (res.headers['Content-Type'] && res.headers['Content-Type'].includes('text/plain')) {
+        if (res.status >= 400) {
+            console.error(`[VU ${__VU}] Request failed with status ${res.status}`);
+            // For error responses, try to decode and log the error message
+            if (res.body && res.headers['Content-Type'] && res.headers['Content-Type'].includes('text/plain')) {
                 try {
                     const bodyText = String.fromCharCode.apply(null, new Uint8Array(res.body));
-                    console.log(`[VU ${__VU}] Response body text: ${bodyText}`);
+                    console.error(`[VU ${__VU}] Error message: ${bodyText}`);
                 } catch (e) {
-                    console.log(`[VU ${__VU}] Could not decode response body as text: ${e}`);
+                    console.error(`[VU ${__VU}] Could not decode error response body`);
                 }
             }
         }
-
-        // Log any error details
+        
         if (res.error) {
             console.error(`[VU ${__VU}] Request error: ${res.error}`);
-        }
-
-        // Log timing breakdown if available
-        if (res.timings) {
-            console.log(`[VU ${__VU}] Timing breakdown:`, JSON.stringify(res.timings, null, 2));
         }
     } else {
         console.error(`[VU ${__VU}] No response received - connection timeout or failure`);
@@ -292,7 +247,6 @@ function httpCall(method, url, headers, body = null, tags = {}) {
 
     if (!res || res.status === 0) {
         console.error(`[VU ${__VU}] Connection timeout detected.`);
-        // test.abort('Request timed out! Stopping entire test.');
     }
 
     check(res, {
@@ -326,36 +280,20 @@ function calculatePartitionId(keyBytes, partitionCount) {
 }
 
 /**
- * Generate batch-get payload using a simplified approach that matches server expectations
- * Since K6 Avro extension doesn't support proper binary serialization like Java client,
- * we'll create individual records and serialize each one properly
+ * Generate batch-get payload using the correct MultiGetRouterRequestKeyV1 protocol
+ * This matches the fast client's serialization logic
  */
 function generateBatchGetPayload(maxKeyID, chunkSize) {
-    console.log(`[VU ${__VU}] Generating batch payload with FIXED key IDs for debugging`);
-
-    // Fixed key IDs for debugging
-    const fixedKeyIDs = [44856, 44857];
-    const actualChunkSize = fixedKeyIDs.length;
-
-    // Create an array to hold all the MultiGetRouterRequestKeyV1 records
     const multiGetRecords = [];
 
-    for (let i = 0; i < actualChunkSize; i++) {
-        const keyID = fixedKeyIDs[i];
+    for (let i = 0; i < chunkSize; i++) {
+        const keyID = getRandomIntInclusive(1, maxKeyID);
         const rawKey = `{"uniqueID" : ${keyID},"dummyStr" : "100"}`;
-
-        console.log(`[VU ${__VU}] Processing FIXED key ${i}: keyID=${keyID}`);
-        console.log(`[VU ${__VU}] Raw key JSON: ${rawKey}`);
 
         // Serialize the key using the key codec
         let binaryKey;
         try {
             binaryKey = keyCodec.binaryFromTextual(rawKey);
-            console.log(`[VU ${__VU}] Key ${i} serialized to ${binaryKey.length} bytes`);
-
-            // Log the binary key bytes for debugging
-            const keyHex = Array.from(binaryKey).map(b => b.toString(16).padStart(2, '0')).join(' ');
-            console.log(`[VU ${__VU}] Key ${i} binary (hex): ${keyHex}`);
         } catch (error) {
             console.error(`[VU ${__VU}] Error serializing key ${i}: ${error}`);
             throw error;
@@ -363,7 +301,6 @@ function generateBatchGetPayload(maxKeyID, chunkSize) {
 
         // Calculate partition ID from the serialized key bytes
         const partitionId = calculatePartitionId(binaryKey, partitionCount);
-        console.log(`[VU ${__VU}] Key ${i} assigned to partition: ${partitionId}`);
 
         // Create the record object that matches MultiGetRouterRequestKeyV1 schema
         // For Avro textual encoding, bytes field should be a string with escaped bytes
@@ -375,38 +312,25 @@ function generateBatchGetPayload(maxKeyID, chunkSize) {
         };
 
         multiGetRecords.push(multiGetRecord);
-        console.log(`[VU ${__VU}] Created record ${i}:`, JSON.stringify(multiGetRecord));
     }
 
     // Serialize each record individually and concatenate them
     // This matches what Java MULTI_GET_REQUEST_SERIALIZER.serializeObjects() does
     try {
-        console.log(`[VU ${__VU}] Serializing ${multiGetRecords.length} MultiGetRouterRequestKeyV1 records individually`);
-        
         const serializedRecords = [];
         
         for (let i = 0; i < multiGetRecords.length; i++) {
             const record = multiGetRecords[i];
-            
-            // Convert single record to JSON
             const recordJson = JSON.stringify(record);
-            console.log(`[VU ${__VU}] Serializing record ${i}: ${recordJson}`);
-            
-            // Serialize individual record using the single-record codec
             const serializedRecord = multiGetRequestCodec.binaryFromTextual(recordJson);
-            console.log(`[VU ${__VU}] Record ${i} serialized to ${serializedRecord.length} bytes`);
-            
             serializedRecords.push(serializedRecord);
         }
         
         // Concatenate all serialized records into a single byte array
-        // This mimics the Venice Java serializeObjects method
         let totalLength = 0;
         for (const record of serializedRecords) {
             totalLength += record.length;
         }
-        
-        console.log(`[VU ${__VU}] Total payload size will be: ${totalLength} bytes`);
         
         const combinedPayload = new Uint8Array(totalLength);
         let offset = 0;
@@ -415,22 +339,10 @@ function generateBatchGetPayload(maxKeyID, chunkSize) {
             offset += record.length;
         }
 
-        console.log(`[VU ${__VU}] Successfully created combined payload: ${combinedPayload.length} bytes`);
-        console.log(`[VU ${__VU}] Payload type: ${typeof combinedPayload}, constructor: ${combinedPayload.constructor.name}`);
-
-        // Log the complete serialized payload in hex format for debugging
-        const payloadHex = Array.from(combinedPayload).map(b => b.toString(16).padStart(2, '0')).join(' ');
-        console.log(`[VU ${__VU}] Complete serialized payload (hex): ${payloadHex}`);
-
-        // Also log as ASCII to see if there are readable parts
-        const payloadAscii = Array.from(combinedPayload).map(b => (b >= 32 && b <= 126) ? String.fromCharCode(b) : '.').join('');
-        console.log(`[VU ${__VU}] Complete serialized payload (ASCII): ${payloadAscii}`);
-
         return combinedPayload;
 
     } catch (error) {
-        console.error(`[VU ${__VU}] Error serializing payload: ${error}`);
-        console.error(`[VU ${__VU}] Error stack: ${error.stack}`);
+        console.error(`[VU ${__VU}] Error serializing batch payload: ${error}`);
         throw error;
     }
 }
